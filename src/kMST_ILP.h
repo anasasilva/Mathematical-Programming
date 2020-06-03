@@ -27,6 +27,7 @@ private:
 	IloBoolVarArray z; // node selection variables
 	IloIntVarArray f; // flow variables
 	IloIntVarArray d; // node distance variables
+	IloIntVarArray u;
 
 	IloNumArray values; // to store variable values
 
