@@ -40,6 +40,8 @@ int main( int argc, char *argv[] )
 		}
 	}
 
+	k = 3;
+
 	// read instance
 	Instance inst;
 	inst.import( file );

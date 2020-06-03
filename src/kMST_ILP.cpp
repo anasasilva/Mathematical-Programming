@@ -16,7 +16,7 @@ void kMST_ILP::solve()
 		initCPLEX();
 
 		// add common constraints
-		// modelCommon();
+		modelCommon();
 		// add model-specific constraints
 		if( model_type == "scf" ) modelSCF();
 		else if( model_type == "mcf" ) modelMCF();
@@ -57,18 +57,6 @@ void kMST_ILP::solve()
 		cout << "Objective value: " << cplex.getObjValue() << "\n";
 		cout << "CPU time: " << Tools::CPUtime() << "\n\n";
 
-		char VarName[24];
-		for(u_int e=0; e < 2* instance.n_edges; e++){
-			sprintf( VarName, "x_%d", e);
-			cout << VarName << ": " << cplex.getValue(x[e]) << endl;
-		}
-
-		for(u_int e=0; e < instance.n_nodes; e++)
-		{
-			sprintf( VarName, "u_%d", e);
-			cout << VarName << ": " << cplex.getValue(u[e]) << endl;
-		}
-
 	}
 	catch( IloException &e ) {
 		cerr << "kMST_ILP: exception " << e.getMessage();
@@ -106,54 +94,31 @@ void kMST_ILP::modelCommon()
 		// TODO create variables, build common constraints
 		// +++++++++++++++++++++++++++++++++++++++++++++++
 		
-		int sq_nodes = instance.n_nodes * instance.n_nodes;
 		int nr_nodes = instance.n_nodes;
+		int nr_edges = instance.n_edges;
 
-		// Variables
-		x = IloBoolVarArray (env, sq_nodes); // edge or arc selection variables
-		f = IloIntVarArray (env, sq_nodes); // flow variables
-		d = IloIntVarArray (env, sq_nodes); // node distance variables	
-		z = IloBoolVarArray (env, nr_nodes); // node selection variables
+		// Initialization of x - edge or arc selection variables
+		// number of x variables = number of arcs (edges in both directions)
+		x = IloBoolVarArray(env, 2 * nr_edges);
 
-		for (u_int i = 0; i < nr_nodes; i++ ) {
-
-			for (u_int j = 0; j < nr_nodes; j++) {
-				u_int index = i * nr_nodes + j;
-
-				stringstream xname;
-				xname << "x" << i << j;
-				x[index] = IloBoolVar(env, xname.str().c_str());
-
-				stringstream fname;
-				fname << "f" << i << j;
-				f[index] = IloBoolVar(env, 0, 1, fname.str().c_str());
-
-				stringstream dname;
-				dname << "d" << i << j;
-				d[index] = IloBoolVar(env, dname.str().c_str());
-			}
-
-			stringstream zname;
-			zname << "z" << i;
-			z[i] = IloBoolVar(env, zname.str().c_str());
+		for(u_int e = 0; e < 2 * nr_edges; e++)
+		{
+			stringstream variableX;
+			variableX << "x" << e;
+			x[e] = IloBoolVar(env, variableX.str().c_str());
 		}
 
-
-
-		// Constraints
-		for (u_int i = 0; i < nr_nodes; i++ ) {
-			
-
-			for (u_int j = 0; j < nr_nodes; j++) {
-				u_int index1 = i * nr_nodes + j;
-				u_int index2 = j * nr_nodes + i;
-
-				model.add( f[index1] + f[index2] = x[index1] );
-
-
-
-			}
+		// Objective Function
+		IloExpr objective(env);
+		for(u_int e = nr_nodes - 1; e < nr_edges; e++)
+		{
+			// sums the weights in both directions
+			// one of them will be 0
+			objective += instance.edges.at(e).weight * x[e];
+			objective += instance.edges.at(e).weight * x[e + nr_edges];
 		}
+		model.add(IloMinimize(env, objective));
+		objective.end();
 	}
 	catch( IloException &e ) {
 		cout << "kMST_ILP::modelCommon: exception " << e << "\n";
@@ -207,239 +172,190 @@ void kMST_ILP::modelMTZ()
 {
 	try {
 
+		int nr_nodes = instance.n_nodes;
+		int nr_edges = instance.n_edges;
+
+		// Initialization of u - order node variable
+		// Vary from 0 to k because MTZ orders the nodes
+		IloIntVarArray u (env, nr_nodes);
+		for(u_int v = 0; v < nr_nodes; v++)
+		{
+			stringstream variableV;
+			variableV << "v" << v;
+			u[v] = IloIntVar(env, 0, k, variableV.str().c_str());
+		}
+
+		// Initialization of z - node selection variables
+		// Makes sure only k variables are chosen
+		z = IloBoolVarArray(env, nr_nodes);
+		for(u_int v = 0; v < nr_nodes; v++)
+		{
+			stringstream variableZ;
+			variableZ << "z" << v;
+			z[v] = IloBoolVar(env, variableZ.str().c_str());
+		}
+
+		// The ordered nodes in u have to been between 0 and k
+		for(u_int v = 1; v < nr_nodes; v++)
+		{
+			IloNumExpr limitOrder(env);
+			limitOrder += u[v];
+			model.add(limitOrder <= k);
+			limitOrder.end();
+		}
+
+		// The route node (the artificial one) is the one with the first id, u[0] = 0
+		// And has to have only 1 outgoing edge
+		model.add(u[0] == 0);
+
+		IloNumExpr routeOut(env);
+		for(u_int e=0; e < nr_nodes - 1; e++)
+		{
+			routeOut += x[e];
+		}
+		model.add(routeOut == 1);
+		routeOut.end();
+
+		// The number of edges must be k-1 
+		IloNumExpr nrEdges(env);
+		for(u_int e = nr_nodes - 1; e < nr_edges; e++)
+		{
+			// both arcs are considered
+			// at least one of them will be 0
+			nrEdges += x[e];
+			nrEdges += x[e + nr_edges];
+		}
+		model.add(nrEdges == k-1);
+		nrEdges.end();
+
+		// // ????????????????
+		// IloNumExpr Expr7(env);
+		// for(u_int v = 0; v < nr_nodes; v++)
+		// {
+		// 	Expr7 += u[v];
+		// }
+		// model.add(Expr7 == (k * (k+1) )/2);
+		// Expr7.end();
+
+		// The node z must be 1 if the node is selected
+		// The node must have an order in u, so the u value must not be 0
+		for(u_int v = 0; v < nr_nodes; v++)
+		{
+			model.add(u[v] <= k * z[v]);
+		}
+
+		// There must be k nodes selected 
+		// So there must be k values in z different from 0
+		IloNumExpr nrNodesK(env);
+		for(u_int v = 0; v < nr_nodes; v++)
+		{
+			nrNodesK += z[v];
+		}
+		model.add(nrNodesK == k);
+		nrNodesK.end();
+
+		// To iterate the list of incidents edges of each vertex
 		unordered_set<u_int>::iterator it;
 
-		u_int n = instance.n_nodes;
-		u_int m = instance.n_edges;
-
-		// (42) // Initialization of x (array of used edges in the solution)
-		x = IloBoolVarArray(env, 2*m);
-		char VarName[24];
-		for(u_int e=0; e < 2*m; e++)
-		{
-			sprintf( VarName, "x_%d",e);
-			x[e] = IloBoolVar(env,VarName);
-		}
-
-		// Initialization of u (array of used nodes in the solution)
-		u = IloIntVarArray(env, n);
-		for(u_int e=0; e < n; e++)
-		{
-			sprintf( VarName, "u_%d",e);
-			u[e] = IloIntVar(env, 0, k,VarName);
-		}
-
-		// (43) // Initialization of y (support array to include only k nodes)
-		IloBoolVarArray y(env, n);
-		for(u_int e=0; e < n; e++)
-		{
-			sprintf( VarName, "y_%d",e);
-			y[e] = IloBoolVar(env,VarName);
-		}
-
-		// (29 // objective function
-		IloExpr expr(env);
-		for(u_int e=n-1; e < m; e++)
-		{
-			expr += instance.edges.at(e).weight * x[e];
-			expr += instance.edges.at(e).weight * x[e+m];
-		}
-		model.add(IloMinimize(env, expr));
-		expr.end();
-
-		// (31) // u[v] has to be between 0 and k
-		for(u_int v=1; v < n; v++)
-		{
-			IloNumExpr Expr2(env);
-			Expr2 += u[v];
-			model.add(Expr2 <= k);
-			Expr2.end();
-		}
-
-		// (32) // u[0] must be 0
-		IloNumExpr Expr5(env);
-		Expr5 += u[0];
-		model.add(Expr5 == 0);
-		Expr5.end();
-
-		// (33) // exactly 1 outgoing edge from the root
-		IloNumExpr Expr4(env);
-		for(u_int e=0; e < n-1; e++)
-		{
-			Expr4 += x[e];
-		}
-		model.add(Expr4 == 1);
-		Expr4.end();
-
-		// (34) // k-1 edges are allowed in the solution
-		IloNumExpr Expr6(env);
-		for(u_int e=n-1; e < m; e++)
-		{
-			Expr6 += x[e];
-			Expr6 += x[e+m];
-		}
-		model.add(Expr6 == k-1);
-		Expr6.end();
-
-		// (35) // sum of the u value
-		IloNumExpr Expr7(env);
-		for(u_int v=0; v < n; v++)
-		{
-			Expr7 += u[v];
-		}
-		model.add(Expr7 == (k*(k+1))/2);
-		Expr7.end();
-
-		// (36) // force y to be 1 if u is in the solution
-		for(u_int v=0; v < n; v++)
-		{
-			IloNumExpr Expr33(env);
-			Expr33 += u[v];
-			model.add(Expr33 <= k*y[v]);
-			Expr33.end();
-		}
-
-		// (37) // only k different nodes allowed
-		IloNumExpr Expr34(env);
-		for(u_int v=0; v < n; v++)
-		{
-			Expr34 += y[v];
-		}
-		model.add(Expr34 == k);
-		Expr34.end();
-
-		// (39) (40) // if f_ij in the solution -> u[i] and u[j] must be greater than 0
-		for(u_int v=1; v < n; v++)
+		// If the edges x are belong to the solution
+		// Both of the incident vertexes must belong to it too
+		for (u_int v = 1; v < nr_nodes; v++)
 		{
 			for(it=instance.incidentEdges.at(v).begin(); it != instance.incidentEdges.at(v).end(); it++)
 			{
-				if(instance.edges.at(*it).v1 == 0)
-				{
-					IloNumExpr Expr6(env);
-					IloNumExpr Expr7(env);
-					Expr6 += x[(*it)];
-					Expr7 += x[(*it)+m];
-					model.add(Expr6 <= u[instance.edges.at(*it).v2]);
-					model.add(Expr7 <= u[instance.edges.at(*it).v2]);
-					Expr6.end();
-					Expr7.end();
+				// the route vertex (artificial one) doesn't belong to the solution
+				if(instance.edges.at(*it).v1 != 0) {
+					model.add(x[(*it)] <= u[instance.edges.at(*it).v1]);
+					model.add(x[(*it) + nr_edges] <= u[instance.edges.at(*it).v1]);
 				}
-				else
-				{
-					IloNumExpr Expr6(env);
-					IloNumExpr Expr7(env);
-					Expr6 += x[(*it)];
-					Expr7 += x[(*it)];
-					model.add(Expr6 <= u[instance.edges.at(*it).v1]);
-					model.add(Expr7 <= u[instance.edges.at(*it).v2]);
-					Expr6.end();
-					Expr7.end();
 
-					IloNumExpr Expr40(env);
-					IloNumExpr Expr41(env);
-					Expr40 += x[(*it)+m];
-					Expr41 += x[(*it)+m];
-					model.add(Expr40 <= u[instance.edges.at(*it).v1]);
-					model.add(Expr41 <= u[instance.edges.at(*it).v2]);
-					Expr40.end();
-					Expr41.end();
-				}
+				model.add(x[(*it)] <= u[instance.edges.at(*it).v2]);
+				model.add(x[(*it)+ nr_edges] <= u[instance.edges.at(*it).v2]);
 			}
 		}
 
-		// (30) // miller tucker zemlin formulation
-		for(u_int e=0; e < m; e++)
+		// MTZ
+		for(u_int e=0; e < nr_edges; e++)
 		{
+			IloNumExpr Expr1(env);
+			IloNumExpr Expr2(env);
+
+			Expr1 += u[instance.edges.at(e).v1];
+			Expr1 += x[e];
+
+			Expr2 += u[instance.edges.at(e).v2];
+			Expr2 += k * (1 - x[e]);
+
+			model.add(Expr1 <= Expr2);
+			Expr1.end();
+			Expr2.end();
+
+			// For the arcs in the order direction
+			IloNumExpr Expr3(env);
 			IloNumExpr Expr4(env);
+
+			Expr3 += u[instance.edges.at(e).v2];
+			Expr3 += x[e + nr_edges];
+
 			Expr4 += u[instance.edges.at(e).v1];
-			Expr4 += x[e];
+			Expr4 += k * (1 - x[(e)+ nr_edges]);
 
-			model.add(Expr4 <= u[instance.edges.at(e).v2] + k*(1-x[e]));
+			model.add(Expr3 <= Expr4 );
+			Expr3.end();
 			Expr4.end();
-
-			IloNumExpr Expr12(env);
-			Expr12 += u[instance.edges.at(e).v2];
-			Expr12 += x[(e)+m];
-
-			model.add(Expr12 <= u[instance.edges.at(e).v1] + k*(1-x[(e)+m]));
-			Expr12.end();
 		}
 
-		// (41) //
-		for(u_int e=n-1; e < m; e++)
+		// Make sure that a node is in the solution when the edge connecting it 
+		// to another node and the other node are in the solution
+		for(u_int e = nr_nodes - 1; e < nr_edges; e++)
 		{
-			IloNumExpr Expr50(env);
-			Expr50 += y[instance.edges.at(e).v1];
-			Expr50 += x[e];
-			Expr50 += x[e+m];
+			IloNumExpr Expr1(env);
+			IloNumExpr Expr2(env);
 
-			model.add(Expr50 <= y[instance.edges.at(e).v2] + 1);
-			Expr50.end();
+			Expr1 += z[instance.edges.at(e).v1];
+			// at most only 1 will equal 1
+			Expr1 += x[e];
+			Expr1 += x[e + nr_edges];
 
-			IloNumExpr Expr51(env);
-			Expr51 += y[instance.edges.at(e).v2];
-			Expr51 += x[e];
-			Expr51 += x[e+m];
+			Expr2 += z[instance.edges.at(e).v2] + 1;
 
-			model.add(Expr51 <= y[instance.edges.at(e).v1] + 1);
-			Expr51.end();
+			model.add(Expr1 <= Expr2);
+			Expr1.end();
+			Expr2.end();
+
+			// For the arcs in the other direction
+			IloNumExpr Expr3(env);
+			IloNumExpr Expr4(env);
+
+			Expr3 += z[instance.edges.at(e).v2];
+			Expr3 += x[e];
+			Expr3 += x[e + nr_edges];
+
+			Expr4 += z[instance.edges.at(e).v2] + 1;
+
+			model.add(Expr3 <= Expr4);
+			Expr3.end();
+			Expr4.end();
 		}
 
-		// (38) // every node \ 0 must have an incoming flow of <= 1
-		for(u_int v=1; v < n; v++)
+		// The incoming arc of each selected node must be at most 1
+		for(u_int v = 1; v < nr_nodes; v++)
 		{
-			IloNumExpr Expr11(env);
+			IloNumExpr nodeFlow(env);
 
 			for(it=instance.incidentEdges.at(v).begin(); it != instance.incidentEdges.at(v).end(); it++)
 			{
 				if(instance.edges.at(*it).v2 == v)
-				{	// incoming edge
-					Expr11 += x[*it];
+				{	// incoming arc
+					nodeFlow += x[*it];
 				}
 				else
-				{	// outgoing edge
-					Expr11 += x[(*it)+m];
+				{	// outgoing arc
+					nodeFlow += x[(*it)+  nr_edges];
 				}
 			}
-			model.add(Expr11 <= 1);
-
-			Expr11.end();
+			nodeFlow.end();
 		}
-
-		// build model
-		// cplex = IloCplex( model );
-		// // export model to a text file
-		// //cplex.exportModel( "model.lp" );
-		// // set parameters
-		// setCPLEXParameters();
-
-		// // solve model
-		// cout << "Calling CPLEX solve ..." << endl;
-		// cplex.solve();
-
-	//	for(u_int i=0; i<n; i++)
-	//	{
-	//		cout << "u[" << i << "] = " << cplex.getValue(u[i]) << endl;
-	//		//printf("x_%d;\n",x[i]);
-	//	}
-	//	for(u_int i=0; i<n; i++)
-	//	{
-	//		cout << "y[" << i << "] = " << cplex.getValue(y[i]) << endl;
-	//		//printf("x_%d;\n",x[i]);
-	//	}
-	//	for(u_int i=0; i<2*m; i++)
-	//	{
-	//		cout << "x[" << i << "] = " << cplex.getValue(x[i]) << endl;
-	//		//printf("x_%d;\n",x[i]);
-	//	}
-
-		// cout << "CPLEX finished." << endl << endl;
-		// cout << "CPLEX status: " << cplex.getStatus() << endl;
-		// cout << "Branch-and-Bound nodes: " << cplex.getNnodes() << endl;
-		// cout << "Objective value: " << cplex.getObjValue() << endl;
-		// cout << "CPU time: " << Tools::CPUtime() << endl;
-		// cout << "Epsilon: " << cplex.getParam(IloCplex::EpInt) << endl << endl;
-
 	}
 	catch( IloException &e ) {
 		cout << "kMST_ILP::modelMTZ: exception " << e << "\n";
