@@ -96,6 +96,7 @@ void kMST_ILP::modelCommon()
 		
 		int nr_nodes = instance.n_nodes;
 		int nr_edges = instance.n_edges;
+		stringstream variableName;
 
 		// Initialization of x - edge or arc selection variables
 		// number of x variables = number of arcs (edges in both directions)
@@ -103,25 +104,22 @@ void kMST_ILP::modelCommon()
 
 		for(u_int e = 0; e < 2 * nr_edges; e++)
 		{
-			stringstream variableX;
-			variableX << "x" << e;
-			x[e] = IloBoolVar(env, variableX.str().c_str());
+			variableName << "x" << e;
+			x[e] = IloBoolVar(env, variableName.str().c_str());
 		}
 
 		// Initialization of z - node selection variables
-		// Makes sure only k variables are chosen
+		// Makes sure only k nodes are chosen
 		z = IloBoolVarArray(env, nr_nodes);
 		for(u_int v = 0; v < nr_nodes; v++)
 		{
-			stringstream variableZ;
-			variableZ << "z" << v;
-			z[v] = IloBoolVar(env, variableZ.str().c_str());
+			variableName << "z" << v;
+			z[v] = IloBoolVar(env, variableName.str().c_str());
 		}
 
 		// The route node (the artificial one) has to have only 1 outgoing edge
-
 		IloNumExpr routeOut(env);
-		for(u_int e=0; e < nr_nodes - 1; e++)
+		for(u_int e = 0; e < nr_nodes - 1; e++)
 		{
 			routeOut += x[e];
 		}
@@ -174,6 +172,24 @@ void kMST_ILP::modelCommon()
 			Expr4.end();
 		}
 
+		// There must be k nodes selected 
+		// So there must be k + 1 values in z that are 1 (includes artificial node)
+		IloNumExpr nrNodesK(env);
+		for (u_int v = 0; v < nr_nodes; v++)
+		{
+			nrNodesK += z[v];
+		}
+		model.add(nrNodesK == k + 1);
+		nrNodesK.end();
+
+
+		// Make sure the nodes are in the solution when the edge that connects them is in the solution
+		for (u_int e = 0; e < 2 * nr_edges; e++)
+		{
+			model.add(x[e] <= z[instance.edges.at(e % nr_edges).v1]);
+			model.add(x[e] <= z[instance.edges.at(e % nr_edges).v2]);
+		}
+
 		// Objective Function
 		IloExpr objective(env);
 		for(u_int e = nr_nodes - 1; e < nr_edges; e++)
@@ -202,90 +218,76 @@ void kMST_ILP::modelSCF()
 
 		int nr_nodes = instance.n_nodes;
 		int nr_edges = instance.n_edges;
+		stringstream varName;
 
-		// (11) // Initialization of flow variable
+		// Initialization of flow variable
+		// Nr of flow varibles = nr of arcs = 2 * nr of edges
 		IloIntVarArray f(env, 2 * nr_edges);
-		for(u_int e=0; e < 2 * nr_edges; e++)
+		for (u_int e = 0; e < 2 * nr_edges; e++)
 		{
-			stringstream varName;
 			varName << "x" << e;
 			f[e] = IloIntVar(env, 0, k, varName.str().c_str());
 		}
 
-		// (7) (8) // if an edge x_ij is selected -> y_i and y_j must be 1
-		for(u_int e = 0; e < 2 * nr_edges; e++)
-		{
-			model.add(x[e] <= z[instance.edges.at(e % nr_edges).v1]);
-			model.add(x[e] <= z[instance.edges.at(e % nr_edges).v2]);
-		}
-
-		// (10) // exactly k+1 different nodes allowed (with artificial node)
-		IloNumExpr Expr34(env);
-		for(u_int v=0; v < nr_nodes; v++)
-		{
-			Expr34 += z[v];
-		}
-		model.add(Expr34 == k+1);
-		Expr34.end();
-
 		unordered_set<u_int>::iterator it;
 
-		// (2) // Flow expression from node 0 (flow k outgoing)
-		IloNumExpr Expr2(env);
-		for(it=instance.incidentEdges.at(0).begin(); it != instance.incidentEdges.at(0).end(); it++)
+		// Flow expression of the artificial node
+		// Node 0 must have k commodities going out
+		IloNumExpr flow0(env);
+		for (it = instance.incidentEdges.at(0).begin(); it != instance.incidentEdges.at(0).end(); it++)
 		{
-			if(instance.edges.at(*it).v1 == 0)
-			{	// outgoing edge
-				Expr2 += f[*it];
-				Expr2 -= f[(*it)+ nr_edges];
+			// outgoing edge from 0
+			if (instance.edges.at(*it).v1 == 0)
+			{	// considers both arcs
+				flow0 += f[*it];
+				flow0 -= f[(*it) + nr_edges];
 			}
+			// incoming edge from 0
 			else
-			{	// incoming edge
-				Expr2 -= f[*it];
-				Expr2 += f[(*it)+nr_edges];
+			{
+				flow0 -= f[*it];
+				flow0 += f[(*it) + nr_edges];
 			}
 
 		}
-		model.add(Expr2 == k);
-		Expr2.end();
+		model.add(flow0 == k);
+		flow0.end();
 
 
-		// (4) // check flow
+		// Flow conservation constraint: the difference between what comes in and out of a node is 1
+		// or 0 (if the initial flow is 0 which means the node doesn't belong to the solution)
 		for(u_int v = 1; v < nr_nodes; v++)
 		{
-			IloNumExpr Expr3(env);
-			IloNumExpr Expr3_right(env);
+			IloNumExpr flowConstraint(env);
+			IloNumExpr initialFlow(env);	// flow on the first node
 
 			for(it=instance.incidentEdges.at(v).begin(); it != instance.incidentEdges.at(v).end(); it++)
 			{
 				if(instance.edges.at(*it).v1 == v)
 				{	// outgoing edge
-					Expr3 -= f[*it];
-					Expr3 += f[(*it) + nr_edges];
+					flowConstraint -= f[*it];
+					flowConstraint += f[(*it) + nr_edges];
 
-					Expr3_right += f[(*it) + nr_edges];
+					initialFlow += f[(*it) + nr_edges];
 				}
 				else
 				{	// incoming edge
-					Expr3 += f[*it];
-					Expr3 -= f[(*it) + nr_edges];
+					flowConstraint += f[*it];
+					flowConstraint -= f[(*it) + nr_edges];
 
-					Expr3_right += f[*it];
+					initialFlow += f[*it];
 				}
 			}
-			model.add(Expr3 == IloMin(1, Expr3_right));
+			model.add(flowConstraint == IloMin(1, initialFlow));
 
-			Expr3.end();
-			Expr3_right.end();
+			flowConstraint.end();
+			initialFlow.end();
 		}
 
-		// (5) // force x[e] to be set if flow exist
-		for(u_int e = 0; e < 2 * nr_edges; e++)
+		// Make sure that if an edge as flow, then the edge belongs to the solution
+		for (u_int e = 0; e < 2 * nr_edges; e++)
 		{
-			IloNumExpr Expr4(env);
-			Expr4 += f[e];
-			model.add(Expr4 <= (k * x[e]));
-			Expr4.end();
+			model.add(f[e] <= (k * x[e]));
 		}
 	}
 	catch( IloException &e ) {
@@ -323,15 +325,15 @@ void kMST_ILP::modelMTZ()
 
 		int nr_nodes = instance.n_nodes;
 		int nr_edges = instance.n_edges;
+		stringstream variableName;
 
 		// Initialization of u - order node variable
 		// Vary from 0 to k because MTZ orders the nodes
 		IloIntVarArray u (env, nr_nodes);
 		for(u_int v = 0; v < nr_nodes; v++)
 		{
-			stringstream variableV;
-			variableV << "v" << v;
-			u[v] = IloIntVar(env, 0, k, variableV.str().c_str());
+			variableName << "v" << v;
+			u[v] = IloIntVar(env, 0, k, variableName.str().c_str());
 		}
 
 		// The ordered nodes in u have to been between 0 and k
@@ -362,16 +364,6 @@ void kMST_ILP::modelMTZ()
 		// The route node (the artificial one) is the one with the first id, u[0] = 0
 		model.add(u[0] == 0);
 
-		// There must be k nodes selected 
-		// So there must be k values in z that are 1
-		IloNumExpr nrNodesK(env);
-		for (u_int v = 0; v < nr_nodes; v++)
-		{
-			nrNodesK += z[v];
-		}
-		model.add(nrNodesK == k);
-		nrNodesK.end();
-
 		// To iterate the list of incidents edges of each vertex
 		unordered_set<u_int>::iterator it;
 
@@ -392,7 +384,7 @@ void kMST_ILP::modelMTZ()
 			}
 		}
 
-		// MTZ
+		// MTZ constraint
 		for(u_int e=0; e < nr_edges; e++)
 		{
 			IloNumExpr Expr1(env);
@@ -426,20 +418,21 @@ void kMST_ILP::modelMTZ()
 		// The incoming arc of each selected node must be at most 1
 		for(u_int v = 1; v < nr_nodes; v++)
 		{
-			IloNumExpr nodeFlow(env);
+			IloNumExpr nrArcs(env);
 
 			for(it=instance.incidentEdges.at(v).begin(); it != instance.incidentEdges.at(v).end(); it++)
 			{
 				if(instance.edges.at(*it).v2 == v)
-				{	// incoming arc
-					nodeFlow += x[*it];
+				{	// incoming edge
+					nrArcs += x[*it];
 				}
 				else
-				{	// outgoing arc
-					nodeFlow += x[(*it)+  nr_edges];
+				{	// outgoing edge
+					nrArcs += x[(*it)+  nr_edges];
 				}
 			}
-			nodeFlow.end();
+			model.add(nrArcs <= 1);
+			nrArcs.end();
 		}
 	}
 	catch( IloException &e ) {
