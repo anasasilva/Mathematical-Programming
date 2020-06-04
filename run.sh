@@ -7,7 +7,7 @@ K2=(0 5 10 25 35 50 100 150 200 500 1000)
 
 for G in `seq 0 0`
 do
-  for MOD in "scf" # "mtz" #"mcf" "cec" "dcc"
+  for MOD in "mcf" # "mtz" #"scf" "cec" "dcc"
   do
     FILE=$(printf "data/g%02d.dat" $G)
     ./kmst -f $FILE -m $MOD -k ${K1[1]}

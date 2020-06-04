@@ -219,6 +219,7 @@ void kMST_ILP::modelSCF()
 		int nr_nodes = instance.n_nodes;
 		int nr_edges = instance.n_edges;
 		stringstream varName;
+		unordered_set<u_int>::iterator it;
 
 		// Initialization of flow variable
 		// Nr of flow varibles = nr of arcs = 2 * nr of edges
@@ -228,8 +229,6 @@ void kMST_ILP::modelSCF()
 			varName << "x" << e;
 			f[e] = IloIntVar(env, 0, k, varName.str().c_str());
 		}
-
-		unordered_set<u_int>::iterator it;
 
 		// Flow expression of the artificial node
 		// Node 0 must have k commodities going out
@@ -304,10 +303,134 @@ void kMST_ILP::modelMCF()
 {
 	try {
 
-		// ++++++++++++++++++++++++++++++++++++++++++
-		// TODO build multi commodity flow model
-		// ++++++++++++++++++++++++++++++++++++++++++
+		int nr_nodes = instance.n_nodes;
+		int nr_edges = instance.n_edges;
+		stringstream varName;
+		unordered_set<u_int>::iterator it;
 
+		// Initialization of f ... size: |V| * |E|
+		IloNumVarArray f (env, 2 * nr_edges * (nr_nodes - 1));
+		for (u_int w = 0; w < nr_nodes - 1; w++)
+		{
+			for (u_int e = 0; e < 2 * nr_edges; e++)
+			{
+				varName << "f" << e << "_" << w;
+				f[(2 * nr_edges * w) + e] = IloNumVar(env, 0, 1, varName.str().c_str());
+			}
+		}
+
+		// For each commodity, we send out exactly 1 unit from the route/artificial node
+		for (u_int w = 0; w < nr_nodes - 1; w++)
+		{
+			IloNumExpr routeFlow(env);
+			for (it = instance.incidentEdges.at(0).begin(); it != instance.incidentEdges.at(0).end(); it++)
+			{
+				if(instance.edges.at(*it).v1 == 0)
+				{	// outgoing edge
+					routeFlow += f[(2 * w * nr_edges ) + (*it)];
+					routeFlow -= f[(2 * w * nr_edges) + ((*it) + nr_edges)];
+				}
+			}
+			model.add(routeFlow <= 1);
+			routeFlow.end();
+		}
+
+		// In total the route node must send exactly k commodities
+		IloNumExpr totalCommoditiesRoute(env);
+		for (u_int w = 0; w < nr_nodes - 1; w++)
+		{
+			for (it = instance.incidentEdges.at(0).begin(); it != instance.incidentEdges.at(0).end(); it++)
+			{
+				if(instance.edges.at(*it).v1 == 0)
+				{	// outgoing edge
+					totalCommoditiesRoute += f[(2 * nr_edges * w) + (*it)];
+					totalCommoditiesRoute -= f[(2 * nr_edges * w) + ((*it) + nr_edges)];
+				}
+			}
+		}
+		model.add(totalCommoditiesRoute == k);
+		totalCommoditiesRoute.end();
+
+		// A node can receive at most one commodity
+		for (u_int w = 0; w < nr_nodes - 1; w++)
+		{
+			IloNumExpr sendCommodities(env);
+			for (it = instance.incidentEdges.at(w + 1).begin(); it != instance.incidentEdges.at(w + 1).end(); it++)
+			{
+				if (instance.edges.at(*it).v2 == w + 1)
+				{	// incoming edge normal
+					sendCommodities += f[(2 * nr_edges * w) + (*it)];
+				}
+				else
+				{	// incoming artificial edge
+					sendCommodities += f[(2 * nr_edges * w) + ((*it) + nr_edges)];
+				}
+			}
+			model.add(sendCommodities <= 1);
+			sendCommodities.end();
+		}
+
+		// A node must receive in total k commodities
+		IloNumExpr totalCommodities(env);
+		for (u_int w = 0; w < nr_nodes - 1; w++)
+		{
+			for (it = instance.incidentEdges.at(w + 1).begin(); it != instance.incidentEdges.at(w + 1).end(); it++)
+			{
+				if (instance.edges.at(*it).v2 == w + 1)
+				{	// incoming edge normal
+					totalCommodities += f[(2 * nr_edges * w) + (*it)];
+				}
+				else
+				{	// incoming artificial edge
+					totalCommodities += f[(2 * nr_edges * w) + ((*it) + nr_edges)];
+				}
+			}
+		}
+		model.add(totalCommodities == k);
+		totalCommodities.end();
+
+		// If the node is not the target node of the comodity, the node can't consume it
+		// It has to push it forward
+		for (u_int w = 0; w < nr_nodes - 1; w++)
+		{
+			for (u_int j = 1; j < nr_nodes; j++)
+			{
+				if(j == w + 1)
+					continue;
+
+				IloNumExpr Expr1(env);
+
+				for (it = instance.incidentEdges.at(j).begin(); it != instance.incidentEdges.at(j).end(); it++)
+				{
+					if (instance.edges.at(*it).v2 == j)
+					{
+
+						Expr1 += f[(2 * nr_edges * w) + (*it)];
+						Expr1 -= f[(2 * nr_edges * w) + (*it + nr_edges)];
+
+					}
+					else if(instance.edges.at(*it).v1 == j)
+					{
+
+						Expr1 -= f[(2 * nr_edges * w) + (*it)];
+						Expr1 += f[(2 * nr_edges * w) + (*it + nr_edges)];
+
+					}
+				}
+
+				model.add(Expr1 == 0);
+				Expr1.end();
+			}
+		}
+
+		// Make sure that if an edge has flow, then the edge belongs to the solution
+		for (u_int w = 0; w < nr_nodes - 1; w++)
+		{
+			for (u_int e = 0; e < 2 * nr_edges; e++)
+			{
+				model.add(f[(2 * w * nr_edges) + e] <= (k * x[e]));
+			}
+		}
 	}
 	catch( IloException &e ) {
 		cout << "kMST_ILP::modelMCF: exception " << e << "\n";
@@ -326,6 +449,7 @@ void kMST_ILP::modelMTZ()
 		int nr_nodes = instance.n_nodes;
 		int nr_edges = instance.n_edges;
 		stringstream variableName;
+		unordered_set<u_int>::iterator it;
 
 		// Initialization of u - order node variable
 		// Vary from 0 to k because MTZ orders the nodes
@@ -363,9 +487,6 @@ void kMST_ILP::modelMTZ()
 
 		// The route node (the artificial one) is the one with the first id, u[0] = 0
 		model.add(u[0] == 0);
-
-		// To iterate the list of incidents edges of each vertex
-		unordered_set<u_int>::iterator it;
 
 		// If the edges x are belong to the solution
 		// Both of the incident vertexes must belong to it too
