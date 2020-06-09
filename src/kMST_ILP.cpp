@@ -5,7 +5,7 @@
 kMST_ILP::kMST_ILP( Instance &_instance, string _model_type, int _k ) :
 	instance( _instance ), model_type( _model_type ), k( _k ), epsInt( 0.0 ), epsOpt( 0.0 )
 {
-	if( k == 0 ) k = instance.n_nodes;
+	if( k == 0 ) k = instance.n_nodes; // excludes the artificial od
 }
 
 void kMST_ILP::solve()
@@ -34,8 +34,8 @@ void kMST_ILP::solve()
 
 		// set parameters
 		cplex.setParam( IloCplex::Param::Threads, 1 ); // only use a single thread
-		cplex.setParam( IloCplex::Param::TimeLimit, 3600 ); // set time limit to 1 hour
-		cplex.setParam( IloCplex::Param::WorkMem, 8192 ); // set memory limit to 8 GB
+		cplex.setParam( IloCplex::Param::TimeLimit, 1800 ); // set time limit to half an hour
+		cplex.setParam( IloCplex::Param::WorkMem, 4096 ); // set memory limit to 4 GB
 
 		epsInt = cplex.getParam( IloCplex::Param::MIP::Tolerances::Integrality );
 		epsOpt = cplex.getParam( IloCplex::Param::Simplex::Tolerances::Optimality );
@@ -89,10 +89,6 @@ void kMST_ILP::initCPLEX()
 void kMST_ILP::modelCommon()
 {
 	try {
-
-		// +++++++++++++++++++++++++++++++++++++++++++++++
-		// TODO create variables, build common constraints
-		// +++++++++++++++++++++++++++++++++++++++++++++++
 		
 		int nr_nodes = instance.n_nodes;
 		int nr_edges = instance.n_edges;
@@ -146,12 +142,11 @@ void kMST_ILP::modelCommon()
 			IloNumExpr Expr1(env);
 			IloNumExpr Expr2(env);
 
-			Expr1 += z[instance.edges.at(e).v1];
 			// at most only 1 will equal 1
 			Expr1 += x[e];
 			Expr1 += x[e + nr_edges];
 
-			Expr2 += z[instance.edges.at(e).v2] + 1;
+			Expr2 += z[instance.edges.at(e).v2];
 
 			model.add(Expr1 <= Expr2);
 			Expr1.end();
@@ -161,11 +156,10 @@ void kMST_ILP::modelCommon()
 			IloNumExpr Expr3(env);
 			IloNumExpr Expr4(env);
 
-			Expr3 += z[instance.edges.at(e).v2];
 			Expr3 += x[e];
 			Expr3 += x[e + nr_edges];
 
-			Expr4 += z[instance.edges.at(e).v2] + 1;
+			Expr4 += z[instance.edges.at(e).v2];
 
 			model.add(Expr3 <= Expr4);
 			Expr3.end();
@@ -258,7 +252,6 @@ void kMST_ILP::modelSCF()
 		for(u_int v = 1; v < nr_nodes; v++)
 		{
 			IloNumExpr flowConstraint(env);
-			IloNumExpr initialFlow(env);	// flow on the first node
 
 			for(it=instance.incidentEdges.at(v).begin(); it != instance.incidentEdges.at(v).end(); it++)
 			{
@@ -266,21 +259,16 @@ void kMST_ILP::modelSCF()
 				{	// outgoing edge
 					flowConstraint -= f[*it];
 					flowConstraint += f[(*it) + nr_edges];
-
-					initialFlow += f[(*it) + nr_edges];
 				}
 				else
 				{	// incoming edge
 					flowConstraint += f[*it];
 					flowConstraint -= f[(*it) + nr_edges];
-
-					initialFlow += f[*it];
 				}
 			}
-			model.add(flowConstraint == IloMin(1, initialFlow));
+			model.add(flowConstraint == z[v]);
 
 			flowConstraint.end();
-			initialFlow.end();
 		}
 
 		// Make sure that if an edge as flow, then the edge belongs to the solution
@@ -468,15 +456,6 @@ void kMST_ILP::modelMTZ()
 			model.add(limitOrder <= k);
 			limitOrder.end();
 		}
-
-		// // ????????????????
-		// IloNumExpr Expr7(env);
-		// for(u_int v = 0; v < nr_nodes; v++)
-		// {
-		// 	Expr7 += u[v];
-		// }
-		// model.add(Expr7 == (k * (k+1) )/2);
-		// Expr7.end();
 
 		// The node z must be 1 if the node is selected
 		// The node must have an order in u, so the u value must not be 0

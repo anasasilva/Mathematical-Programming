@@ -40,7 +40,6 @@ int main( int argc, char *argv[] )
 		}
 	}
 
-	k = 3;
 
 	// read instance
 	Instance inst;
@@ -50,6 +49,12 @@ int main( int argc, char *argv[] )
 	// solve instance
 	kMST_ILP ilp( inst, model_type, k );
 	ilp.solve();
+
+	cout << "==================================" << endl;
+	cout << "Model: " << model_type << endl;
+	cout << "K: " << k << endl;
+	cout << "File: " << file << endl;
+	cout << "==================================" << endl;
 
 	return 0;
 } // main
